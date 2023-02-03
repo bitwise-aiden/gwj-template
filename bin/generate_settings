@@ -1,0 +1,130 @@
+#!/usr/local/bin/python3
+
+import re
+
+
+# Constants
+
+PATH_SETTING = './source/autoloads/setting.gd'
+
+TEMPLATE_LOAD = """func __load() -> void:
+	var config = ConfigFile.new()
+
+	if config.load("user://%s" % __PATH) != OK:
+		__save()
+		config.load("user://%s" % __PATH)
+
+	__LOAD__
+
+
+"""
+
+TEMPLATE_SAVE = """func __save() -> void:
+	var config: ConfigFile = ConfigFile.new()
+
+	__SAVE__
+
+	config.save("user://%s" % __PATH)
+
+
+"""
+
+
+# Regex
+
+re_variable = re.compile(
+    r'^var ([a-z_][a-z_0-9]+): ([a-zA-Z_]\w+) = (.*?)( : set = .*?)?$',
+    re.MULTILINE
+)
+
+re_method = re.compile(
+    r'^func __set_([a-z_][a-z_0-9]+)\(value: ([a-zA-Z_]\w+)\) -> void:\n(.*?)(?=\s+(func|\Z))',
+    re.MULTILINE | re.DOTALL
+)
+
+
+# Methods
+
+def load_settings() -> dict:
+    with open(PATH_SETTING, 'r') as in_file:
+        content = in_file.read()
+
+    settings = {}
+    settings['variables'] = {
+        n: {'type': t, 'default': d, 'setter': None}
+        for n, t, d, s in re.findall(re_variable, content)
+    }
+
+    for name, type, code, _ in re.findall(re_method, content):
+        if name in settings['variables']:
+            settings['variables'][name]['setter'] = {
+                'code': code,
+                'type': type,
+            }
+
+    return settings
+
+
+def save_settings(settings: dict) -> None:
+    content = ''
+    content += 'extends Node\n'
+    content += '\n\n'
+
+    public_variable_content = '# Public variables\n'
+    public_variable_content += '\n'
+
+    private_method_content = '# Private methods\n'
+    private_method_content += '\n'
+
+    load_content = ""
+    save_content = ""
+    setter_content = ""
+
+    variables = settings['variables']
+    for i, name in enumerate(sorted(variables.keys())):
+        type, default, setter = variables[name].values()
+
+        public_variable_content += f'var {name}: {type} = {default} : set = __set_{name}\n'
+
+        load_content += f'\tself.{name} = config.get_value("setting", "{name}", self.{name})\n'
+        save_content += f'\tconfig.set_value("setting", "{name}", self.{name})\n'
+
+        setter_content += f'func __set_{name}(value: {type}) -> void:\n'
+        if setter:
+            setter_content += f'{setter["code"]}\n'
+            setter_content += '\n\n'
+        else:
+            setter_content += f'\t{name} = value\n'
+            setter_content += f'\tEvent.set_{name}.emit(value)\n'
+            setter_content += '\n'
+            setter_content += '\t__save()\n'
+            setter_content += '\n\n'
+
+    content += public_variable_content
+    content += '\n\n'
+
+    private_method_content += TEMPLATE_LOAD.replace(
+        '__LOAD__',
+        load_content.strip(),
+    )
+    private_method_content += TEMPLATE_SAVE.replace(
+        '__SAVE__',
+        save_content.strip(),
+    )
+    private_method_content += setter_content
+
+    content += private_method_content.strip()
+
+    with open(PATH_SETTING, 'w') as out_file:
+        print(content, file=out_file)
+
+
+def main() -> None:
+    settings = load_settings()
+    save_settings(settings)
+
+
+# Entry point
+
+if __name__ == '__main__':
+    main()
